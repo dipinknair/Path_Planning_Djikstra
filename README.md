@@ -1,7 +1,7 @@
 
-# Project Title
+# Path planning using Djikstra algorithm and A* 
 
-Path planning using Djikstra algorithm and A* 
+
 
 ## Description
 
