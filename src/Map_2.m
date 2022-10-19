@@ -1,0 +1,151 @@
+%%% Project Path planning in dynamic environment 
+%%% 12/04/2021
+%%% Rémi Cartert
+
+clear all;
+close all;
+clc;
+
+
+%%%%%%%%%%%%   General Variable    %%%%%%%%%%%%%%%
+size_map=50; 
+start=[2,2];
+goal=[size_map-2,size_map-2];
+robot_velocity = 0.6;
+angular_velocity=2;
+
+%%%%%%%%%%%%   Pre-Build Maps    %%%%%%%%%%%%%%%
+myMap = binaryOccupancyMap(size_map,size_map,1,"grid");
+
+walls=zeros(size_map,size_map);
+walls(1,:)=1; %Top Wall 
+walls(end,:)=1; %Bottom wall
+walls(:,end)=1; %Right Wall 
+walls(:,1)=1; %Left wall
+setOccupancy(myMap,[1 1], walls, "grid");
+%show(myMap), grid on
+
+%%%%%%%%%%%%   Fixed Obstacle Generation    %%%%%%%%%%%%%%%
+%Map 1
+walls(round(size_map/3),1:round(2*size_map/3))=1; % First wall
+%Map 1
+%walls(round(2*size_map/3),round(size_map/3):end)=1; %SecondWall
+%Map 2
+walls(round(size_map/2):end,round(size_map/3))=1; %SecondWall
+
+
+
+%%
+%%%%%%%%%%%%   Path Planning    %%%%%%%%%%%% Given by the Dstart
+%example aglorithm
+path =[[2,2]
+[2.02922846254311	2.45522778743892]
+[10.8133047978623	14.9385884323775]
+[21.8204019933420	17.1779560522911]
+[26.8784333886629	24.2014804587514]
+[28	28]];
+
+%%
+%%%%%%%%%%% Dynamic Obstacle initialisation V1 %%%%%%%%%
+
+Y_Obstacle = [round(1*size_map/4) round(size_map/2)] ;         
+X_Obstacle = [round(size_map/2) round(3*size_map/4)];
+V_Obstacle=1;
+Obstacle_lenght=[5 6];
+Obstacle_orientation = [0 90];  %initial obstacle orientation
+nb_obstacles=2;
+
+PreviousX=Y_Obstacle;
+PreviousY=X_Obstacle;
+
+%%
+robotPosition=start;
+robotGoal=goal;
+goalRadius = 0.05;
+distanceToGoal=norm(robotGoal-robotPosition);
+
+
+% Initialize the simulation loop
+sampleTime = 0.1;
+vizRate = rateControl(1/sampleTime);
+
+% Initialize the figure
+figure
+reset(vizRate);
+while( robotPosition ~= robotGoal )
+    
+    % Re-compute the distance to the goal
+    %distanceToGoal = norm(robotCurrentPose(1:2) - robotGoal(:));
+
+    for i = 1:nb_obstacles
+        %Movement among X
+        if (Obstacle_orientation(i)==0 || Obstacle_orientation(i)==180)
+            if (walls(Y_Obstacle(i),X_Obstacle(i)+Obstacle_lenght(i)+1)==1)
+                Obstacle_orientation(i)=180;
+            end
+            if (walls(Y_Obstacle(i),X_Obstacle(i)-1)==1)
+                Obstacle_orientation(i)=0;
+            end
+            X_Obstacle(i) = X_Obstacle(i)+V_Obstacle*cosd(Obstacle_orientation(i));
+            walls(PreviousY(i),PreviousX(i):PreviousX(i)+Obstacle_lenght(i))=0;  % erase last obstacle position
+            walls(Y_Obstacle(i),X_Obstacle(i):X_Obstacle(i)+Obstacle_lenght(i))=1;  % new obstacle position
+        end
+
+        %Movement among Y   
+        if (Obstacle_orientation(i)==90 || Obstacle_orientation(i)==-90)
+            test='loop Y';
+            if(walls(Y_Obstacle(i)+Obstacle_lenght(i)+1,X_Obstacle(i))==1)
+                Obstacle_orientation(i)=-90;
+            end
+            if (walls(Y_Obstacle(i)-1,X_Obstacle(i))==1)
+                Obstacle_orientation(i)=90;
+            end
+            Y_Obstacle(i) = Y_Obstacle(i)+V_Obstacle*sind(Obstacle_orientation(i)); 
+            walls(PreviousY(i):PreviousY(i)+Obstacle_lenght(i),PreviousX(i))=0;  % erase last obstacle position
+            walls(Y_Obstacle(i):Y_Obstacle(i)+Obstacle_lenght(i),X_Obstacle(i))=1;  % new obstacle position
+        end
+
+        PreviousX(i)=X_Obstacle(i);
+        PreviousY(i)=Y_Obstacle(i);
+    end
+
+    
+    
+    %%
+    
+    setOccupancy(myMap,[1 1], walls, "grid");
+
+    % Update the plot
+    hold off
+    show(myMap);
+    hold all
+
+    waitfor(vizRate);
+end
+
+
+% moving point
+%{
+    dx = 0.5*cosd(t);      % how fast we move
+    dy = 0.5*sind(t);
+    if ((px>25) || (px<5))
+        t=t+160;
+    end
+    if ((py>25) || (py<5))
+        t=t+160;
+    end
+    plot(start(1),start(2),'.g');
+    plot(goal(1),goal(2),'.r');
+    
+    plot([px px+dx]', [py py+dy]')      % plot displacement
+    px = px + dx;                       % new position
+    py = py + dy;
+    h = plot(px,py,'.b');               % plot new position
+    %pause(0.2)                          % wait
+    %delete(h)                           % remove new position
+                                        % from graph
+    dx = 1*cosd(t);      % how fast we move
+    dy = 1*sind(t);
+    %t = t + 90*(0.5-rand(size(px)));    % change direction (-45:45) degree
+
+%}

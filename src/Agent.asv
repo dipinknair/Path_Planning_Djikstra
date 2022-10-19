@@ -1,0 +1,343 @@
+classdef Agent < handle
+    
+    properties
+        Alternate_Path;
+        Alternate_Route;
+        Alternate_Dest;
+        Alternate_Route_Flag = 0;
+        CalcMaskRows;
+        CalcMaskCols;
+        Calc_Cells;
+        ClosestObjDist = 999;
+        Current_Pose = [1 1];
+        Current_Local_Pose;
+        Current_Path = [];
+        Direction_Check;
+        Cond_Path;
+        Match_Path;
+        Init_Global_Pose
+        Init_Path = [];
+        Init_Path_Index = 1;
+        Init_Path_Off;
+        ObjectFarthestY;
+        Path_Vision_Frame;
+        FOV_Scale;
+        MinDist = 1;
+        Objects = {};
+        Objects_VisFrame = {};
+        ObjectDist = [];
+        ReqX;
+        ReqY;
+        Solver_Space;
+        Speed = 1;
+        Time_Step = 1;
+        VisionMaskRows;
+        VisionMaskCols;
+        Vision_Min_FOV = 135; % Degree of vision, slightly in front
+        Vision_Current_FOV;
+        Vision_Size;
+        Vision_Range = 2;
+        VisionCenter = [1 1];
+        Vision = [];
+        Vizualization = 1;
+    end
+    
+    methods
+        % Constructor
+        function obj = Agent(Init_V_Range,Init_Speed, Init_Pose, Init_Path)
+
+            obj.Vision_Range = Init_V_Range;
+            obj.Speed = Init_Speed;
+            obj.Current_Pose = Init_Pose; % Global Frame Pose
+            obj.Init_Path = Init_Path;
+            obj.Current_Path = Init_Path;
+            % disp(obj.Current_Path{1});
+
+            obj.PathTF()
+
+        end
+        
+%%% ---------------------------------------------------------------- %%%
+
+        % Return current [x,y] position
+        function Pose = GetPose(obj)
+             Pose = obj.Current_Pose;
+        end
+        
+%%% ---------------------------------------------------------------- %%%
+
+        % Set [x,y] position 
+        function SetPose(obj, New_Pose)
+            obj.Current_Pose = New_Pose;
+        end
+        
+%%% ---------------------------------------------------------------- %%%
+
+        % Get current path [[x1,y1],[x2,y2],....]
+        function Path = GetPath(obj)
+             Path = obj.Current_Path;
+        end
+        
+%%% ---------------------------------------------------------------- %%%
+
+        % Set path [[x1,y1],[x2,y2],....]
+        function SetPath(obj, Path)
+             obj.Current_Path = Path;
+        end
+    
+%%% ---------------------------------------------------------------- %%%
+
+        % Get environment time step
+        function GetTimeStep(obj, Env)
+             obj.Time_Step = Env;
+        end
+
+%%% ---------------------------------------------------------------- %%%
+
+        function UpdateObjects(obj, Objects)
+             obj.Objects = Objects;
+             obj.ClosestObj();
+        end
+        
+%%% ---------------------------------------------------------------- %%%
+
+        % Set vision scope based on the resolution of the environment
+        % Can pass these cell locations to environment and offset based on
+        % current position
+        function SetVisionScope(obj)
+            
+            [obj.VisionMaskRows, obj.VisionMaskCols] = meshgrid(-obj.Vision_Range - 1:obj.Vision_Range + 2,...
+                -obj.Vision_Range - 1:obj.Vision_Range + 2);
+
+            obj.Vision = (obj.VisionMaskRows).^2 ...
+                + (obj.VisionMaskCols).^2 <= obj.Vision_Range.^2;
+            
+            % Mark agent in center of vision
+            obj.VisionCenter = round(size(obj.Vision)/2);
+            obj.Vision(obj.VisionCenter(1),obj.VisionCenter(2)) = 0;
+            obj.Vision_Size = size(obj.Vision);
+
+%             disp(obj.VisionCenter);
+            
+%             Test Objects
+%             obj.tempsize = size(obj.Vision)/2;
+%             % Test Obj1
+%             obj.Vision(obj.tempsize(1)+2:obj.tempsize(1)+4,obj.tempsize(2)+2:obj.tempsize(2)+3) = 0;
+%             % Test obj2
+%             obj.Vision((end - (obj.tempsize(1)+4)):(end-(obj.tempsize(1)+2)),...
+%                 (end - (obj.tempsize(2)+5)):(end - (obj.tempsize(2)+3))) = 0;
+
+        end
+        
+%%% ---------------------------------------------------------------- %%%
+
+        % Set calculation scope depending on what is in the current vision
+        % The scope should be based on the distance to obstacle and will change the angle of calculation
+        % Function of distance to nearest object, will grow
+        % exponentially based on how close it is        
+        function Solver_Space = SetCalculationScope(obj,temp)
+            
+            % Just for testing
+            obj.ClosestObjDist = temp;
+
+            obj.SetVisionScope();
+            
+            % Grid matched to vision space
+            obj.CalcMaskRows = obj.VisionMaskRows;
+            obj.CalcMaskCols = obj.VisionMaskCols;
+            
+            % All possible cells to be calculated, matches vision space
+            obj.Calc_Cells = (obj.CalcMaskRows).^2 ...
+                + (obj.CalcMaskCols).^2 <= obj.Vision_Range.^2;
+            
+            % Scale of FOV based on current closest object
+            obj.FOV_Scale = obj.ClosestObjDist^2;
+            
+            % Current field of view based on distance to obstacle
+            obj.Vision_Current_FOV = deg2rad((((360 - obj.Vision_Min_FOV)/obj.FOV_Scale)...
+                + obj.Vision_Min_FOV)/2);
+            
+            % Obtain calculation space
+            Solver_Space = VisionProcess(obj.Vision_Current_FOV, obj.Vision_Range, obj.Vision, obj.Calc_Cells,obj.Vizualization); 
+            
+        end
+        
+%%% ---------------------------------------------------------------- %%%
+
+        % Find cells which are nonzero and valid for calculation and pass
+        % as linear indicies
+        function [ReqCells,MatSize]  = ReqCells(obj)
+            
+            [obj.ReqX, obj.ReqY] = find(obj.Solver_Space); % Grab 1's from solver space and return x,y positions from vision frame
+            obj.ReqX = obj.ReqX - obj.VisionCenter(1); % From vision frame to local frame
+            obj.ReqY = obj.ReqY - obj.VisionCenter(2); % From vision frame to local frame
+
+            ReqCells = sub2ind(obj.Vision_Size(1), obj.ReqX, obj.ReqY); % Convert to linear indicies
+            MatSize = obj.Vision_Size(1); % Size to decode linear indices
+
+        end
+
+%%% ---------------------------------------------------------------- %%%
+
+        % Checks current path if it is valid (no objects in front of it)
+        function CheckPath(obj)
+
+            for i = 1:length(obj.Current_Path) % Search currennt alternate path
+                for j = 1:length(obj.Objects) % Search through each current object
+                    for k = 1:length(obj.Objects(j,1,:)) % Search blocks
+
+                        obj.Match_Path = [obj.Objects(j,1,k,1)-1:obj.Objects(j,1,k,1)+1,obj.Objects(j,1,k,2)-1:obj.Objects(j,1,k,2)+1];
+                        obj.Direction_Check = obj.Current_Path(i) - obj.Objects(j,1,k,:); % Check if current distance aligns with velocity
+
+                        obj.Cond_Path = (isequal(obj.Current_Path(i), obj.Match_Path) ||...
+                            obj.Objects(j,3) == obj.Direction_Check); % Check if object is crossing current path or is going to cross with current vel
+
+                        if (obj.ClosestObjDist < obj.MinDist) && obj.Cond_Path % Check validity i.e. object [x,y] == path [x,y]
+                            
+                            % Request Alternative path
+                            obj.Alternate_Route_Flag = true;
+                            return;
+    
+                        else
+    
+                            % Keep current path
+                            obj.Alternate_Route_Flag = false;
+    
+                        end
+
+                    end
+                end
+            end
+
+        end
+
+%%% ---------------------------------------------------------------- %%%
+
+        function AltPath(obj)
+            
+            % Check if 180 or 90 is positive and 0 or -90 is negative
+            % direction
+            if obj.ClosestObjDist{1}{3} >= 90 
+                
+                % Not sure if this will work, (x,y) position of farthest local y value cell 
+                obj.ObjectFarthestY = obj.ClosestObjDist{1}{1}{find(max(obj.ClosestObjDist{1}{1}{:}{2}))}{:}; 
+
+            else
+
+                % Not sure if this will work, (x,y) position of farthest local y value cell 
+                obj.ObjectFarthestY = obj.ClosestObjDist{1}{1}{find(min(obj.ClosestObjDist{1}{1}{:}{2}))}{:}; 
+
+            end
+            
+            obj.Alternate_Dest = obj.ObjectFarthestY - [1,0]; % Avoid colliding by shifting one cell infront of object
+            obj.CallSolver();
+
+        end
+
+
+%%% ---------------------------------------------------------------- %%%
+
+        % Reconnect to Init_Path
+        function Reconnect(obj)
+            
+            % Super SUS
+            obj.Alternate_Dest = obj.Init_Path(obj.Init_Path_Index + round(obj.Vision_Range*(2/3)));
+            obj.CallSolver();
+        
+        end
+
+%%% ---------------------------------------------------------------- %%%
+
+        % Initiate a movement
+        % Calculate scope of vision in current position
+        % Tabulate current objects in vision space and current direction
+        % Calculate solution scope
+        % Call Solver
+        function Move(obj)
+
+            obj.ClosestObj(); % Ensure the closest object is updated
+            obj.CheckPath();
+
+            if ~obj.Alternate_Route_Flag % Check if alternate route is requested from check path
+
+                % Check valid path
+                obj.Current_Pose = obj.Current_Path(2,1:2); % Update pose, local frame
+                % obj.Current_Local_Pose = obj.Current_Path(2,1:2) - obj.Init_Global_Pose; % I may be an idiot here
+                obj.Current_Path(1) = []; % Remove previous position from path
+                obj.Current_Path = obj.Init_Path(obj.Init_Path_Index:end);
+
+                obj.Init_Path_Index = obj.Init_Path_Index + 1; 
+
+                % Replace for remaining path
+
+            else % Object in distance threshold
+
+               obj.AltPath()
+
+            end 
+
+        end
+
+%%% ---------------------------------------------------------------- %%%
+
+        % Convert init path to local frame
+        function PathTF(obj)
+            
+            disp(cell2mat(obj.Init_Path));
+            obj.Init_Path = cell2obj.Init_Path - obj.Init_Path{1};
+            disp(obj.Init_Path);
+            % obj.Current_Local_Pose = [0,0];
+
+        end
+
+%%% ---------------------------------------------------------------- %%%
+
+        function CallSolver(obj)
+            
+            % Call solver and pass calculation parameters
+            [obj.Alternate_Route, obj.Alternate_Path] = Dstar(obj.Solver_Space,obj.VisionCenter,obj.Alternate_Dest,false);
+
+        end
+
+
+%%% ---------------------------------------------------------------- %%%
+
+        % Uses vision and lookes for any object on the
+        % current path, or are likely to be and decides how to divert
+        function ClosestObj(obj)
+            for i = 1:length(obj.Objects) % Loop objects
+                for j = 1:length(obj.Objects{i,1}) % Loop containing positions
+                    if obj.Objects{i,j,1} >= obj.VisionCenter % Must be in front of agent to compensate
+
+                        % Find Cell Dist
+                        obj.ObjectDist{i,j} = {sqrt((obj.Objects{i,1,j,1} - obj.Current_Pose(1))^2 -...
+                            (obj.Objects{i,1,j,2} - obj.Current_Pose(2))^2)}; 
+    
+                        if obj.ClosestObjDist > obj.ObjectDist{end+1}
+    
+                            % Update Closest Object Statistics
+                            obj.ClosestObjDist = {{obj.Objects{i}}, {obj.Objects{i,1,j}},obj.ObjectDist{i,j}, obj.Objects{i,2}};
+    
+                        end
+                    end
+                end
+            end        
+        end
+            
+%%% ---------------------------------------------------------------- %%%
+
+        % TF objects to vision frame, mask in objects to vision 
+        % Velocity does not need TF, will be directional unit vector
+        function MaskObj(obj)
+            for i = 1:length(obj.Objects()) % Index Objects
+                for j = 1:length(obj.Objects(i,1)) % Index blocks within object
+
+                    obj.Objects_VisFrame = obj.Objects{i,1,j,:} + obj.VisionCenter; % Convert to vision frame, was in relative
+                    obj.Vision(obj.Objects_VisFrame(i,1,j,1),obj.Objects_VisFrame(i,1,j,2)) = 0; % Mark vision accordingly
+
+                end    
+            end
+        end
+    end
+end
+
