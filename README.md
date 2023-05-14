@@ -9,7 +9,7 @@ Mobile robots have seen significant development over the years. Path planning in
 
 ## Results
 
-
+![Video](Report1/Figures/result.gif)
 ## Getting Started
 
 ### Dependencies
